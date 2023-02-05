@@ -153,6 +153,7 @@ def normalize_parameters(model, config, **kwargs):
             scale_fac = scale_facs[layer.name]
         inbound = get_inbound_layers_with_params(layer)
         if len(inbound) == 0:  # Input layer
+            print(scale_facs)
             parameters_norm = [
                 parameters[0] * scale_facs[model.layers[0].name] / scale_fac,
                 parameters[1] / scale_fac]
@@ -351,11 +352,14 @@ def get_activations_layer(layer_in, layer_out, x, batch_size=None):
 
     if batch_size is None:
         batch_size = 10
+    
+    # batch size larger than num_to_test leads to problems
+    _batch_size = len(x) if batch_size > len(x) else batch_size
 
-    if len(x) % batch_size != 0:
-        x = x[: -(len(x) % batch_size)]
+    if len(x) % _batch_size != 0:
+        x = x[: -(len(x) % _batch_size)]
 
-    return Model(layer_in, layer_out).predict(x, batch_size)
+    return Model(layer_in, layer_out).predict(x, _batch_size)
 
 
 def get_activations_batch(ann, x_batch):

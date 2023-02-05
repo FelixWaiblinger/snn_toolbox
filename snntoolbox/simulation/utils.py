@@ -144,6 +144,7 @@ class AbstractSNN:
         self.is_built = False
         self._batch_size = None  # Store original batch_size here.
         self.batch_size = self.adjust_batchsize()
+        self._detector = False
 
         # Logging variables
         self.spiketrains_n_b_l_t = self.activations_n_b_l = None
@@ -421,7 +422,15 @@ class AbstractSNN:
         print("Building spiking model...")
 
         self.parsed_model = parsed_model
-        self.num_classes = int(self.parsed_model.layers[-1].output_shape[-1])
+        try:
+            for layer in self.parsed_model.layers:
+                if layer.name == 'class_label':
+                    self.num_classes = int(layer.output_shape[-1])
+                if layer.name == 'bounding_box':
+                    self._detector = True
+        except KeyError:
+            self.num_classes = \
+                int(self.parsed_model.layers[-1].output_shape[-1])
         self.top_k = min(self.num_classes, self.config.getint('simulation',
                                                               'top_k'))
 
@@ -453,7 +462,14 @@ class AbstractSNN:
 
         self.is_built = True
 
-    def run(self, x_test=None, y_test=None, dataflow=None, **kwargs):
+    def run(
+        self,
+        x_test=None,
+        bb_test=None,
+        y_test=None,
+        dataflow=None,
+        **kwargs
+    ):
         """ Simulate a spiking network.
 
         This methods takes care of preparing the dataset for batch-wise
@@ -509,8 +525,13 @@ class AbstractSNN:
             self.restore_snn()
 
         # Extract certain samples from test set, if user specified such a list.
-        x_test, y_test = get_samples_from_list(x_test, y_test, dataflow,
-                                               self.config)
+        test_data = get_samples_from_list(x_test, bb_test, y_test,
+                                          dataflow, self.config)
+
+        if self._detector:  # bb data must be present otherwise would be False
+            x_test, bb_test, y_test = test_data
+        else:
+            x_test, y_test = test_data
 
         # Divide the test set into batches and run all samples in a batch in
         # parallel.
@@ -521,6 +542,8 @@ class AbstractSNN:
         top5score_moving = 0
         score1_ann = 0
         score5_ann = 0
+        truth_bbs = []
+        guess_bbs = []
         truth_d = []  # Filled up with correct classes of all test samples.
         guesses_d = []  # Filled up with guessed classes of all test samples.
 
@@ -571,11 +594,14 @@ class AbstractSNN:
 
             # Get a batch of samples
             x_b_l = None
+            b_b_l = None
             y_b_l = None
             if x_test is not None:
                 batch_idxs = range(self.batch_size * batch_idx,
                                    self.batch_size * (batch_idx + 1))
                 x_b_l = x_test[batch_idxs, :]
+                if self._detector:
+                    b_b_l = bb_test[batch_idxs, :]
                 if y_test is not None:
                     y_b_l = y_test[batch_idxs, :]
             elif dataflow is not None:
@@ -598,12 +624,16 @@ class AbstractSNN:
             truth_b = np.argmax(y_b_l, axis=1)
 
             data_batch_kwargs['truth_b'] = truth_b
+            data_batch_kwargs['truth_bbs'] = b_b_l
             data_batch_kwargs['x_b_l'] = x_b_l
 
             # Main step: Run the network on a batch of samples for the duration
             # of the simulation.
             print("\nStarting new simulation...\n")
-            output_b_l_t = self.simulate(**data_batch_kwargs)
+            if self._detector:
+                output_b_l_t, output_bb = self.simulate(**data_batch_kwargs)
+            else:
+                output_b_l_t = self.simulate(**data_batch_kwargs)
 
             # Halt if model is to be serialised only.
             if self.config.getboolean('tools', 'serialise_only'):
@@ -642,10 +672,27 @@ class AbstractSNN:
                   "".format(self.top_k, top1acc_moving, top5acc_moving))
 
             # Evaluate ANN on the same batch as SNN for a direct comparison.
-            score = self.parsed_model.evaluate(
-                x_b_l, y_b_l, self.parsed_model.input_shape[0], verbose=0)
-            score1_ann += score[1] * self.batch_size
-            score5_ann += score[2] * self.batch_size
+            if bb_test is not None:
+                test_targets = {'class_label': y_b_l, 'bounding_box': b_b_l}
+                score = self.parsed_model.evaluate(
+                    x_b_l,
+                    test_targets,
+                    self.parsed_model.input_shape[0],
+                    verbose=0,
+                    return_dict=True)
+            else:
+                score = self.parsed_model.evaluate(
+                    x_b_l, y_b_l, self.parsed_model.input_shape[0], verbose=0)
+
+            print(score)
+
+            if type(score) is list:
+                score1_ann += score[1] * self.batch_size
+                score5_ann += score[2] * self.batch_size
+            elif type(score) is dict:
+                score1_ann += score['class_label_accuracy'] * self.batch_size
+                score5_ann += score['class_label_top_k_categorical_accuracy'] * self.batch_size
+
             self.top1err_ann = 1 - score1_ann / num_samples_seen
             self.top5err_ann = 1 - score5_ann / num_samples_seen
             print("Moving accuracy of ANN (top-1, top-{}): {:.2%}, {:.2%}."
@@ -1156,7 +1203,7 @@ class AbstractSNN:
         pass
 
 
-def get_samples_from_list(x_test, y_test, dataflow, config):
+def get_samples_from_list(x_test, bb_test, y_test, dataflow, config):
     """
     If user specified a list of samples to test with
     ``config.get('simulation', 'sample_idxs_to_test')``, this function extracts
@@ -1187,9 +1234,14 @@ def get_samples_from_list(x_test, y_test, dataflow, config):
             x_test = np.array([x_test[i] for i in si])
             y_test = np.array([y_test[i] for i in si])
 
+        if bb_test is not None:
+            bb_test = np.array([bb_test[i] for i in si])
+
         config.set('simulation', 'num_to_test', str(num_to_test))
 
-    return x_test, y_test
+    bbs = (bb_test,) if bb_test is not None else ()
+    ret = (x_test,) + bbs + (y_test,)
+    return ret  # == CHANGED BY FELIX
 
 
 def build_1d_convolution(layer, delay):
@@ -1822,4 +1874,7 @@ def convert_kernel(kernel):  # Copy of Keras code removed for deprecation
     kernel = np.asarray(kernel)
     if not 3 <= kernel.ndim <= 5:
         raise ValueError('Invalid kernel shape:', kernel.shape)
-    return np.flip(kernel, np.arange(kernel.ndim - 2))
+    slices = [slice(None, None, -1) for _ in range(kernel.ndim)]
+    no_flip = (slice(None, None), slice(None, None))
+    slices[-2:] = no_flip
+    return np.copy(kernel[slices])

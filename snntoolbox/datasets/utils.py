@@ -86,6 +86,13 @@ def get_dataset(config):
             x_test = load_npz(dataset_path, 'x_test.npz')[:num_to_test]
             y_test = load_npz(dataset_path, 'y_test.npz')[:num_to_test]
             testset = {'x_test': x_test, 'y_test': y_test}
+            # check for saved bboxes -> classification or detection task?
+            try:
+                bb_test = load_npz(dataset_path, 'bb_test.npz')[:num_to_test]
+                testset['bb_test'] = bb_test
+                print("Task: Object detection")
+            except OSError:
+                print("Task: Image classification")
         if is_normset_needed:
             x_norm = load_npz(dataset_path, 'x_norm.npz')
             normset['x_norm'] = x_norm

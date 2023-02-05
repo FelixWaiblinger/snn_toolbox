@@ -440,7 +440,7 @@ class NoisySoftplus:
         self.k = k
         self.sigma = sigma
         self.__name__ = 'noisy_softplus_{}_{}'.format(self.k, self.sigma)
-                
+
     def __call__(self, *args, **kwargs):
         return self.k * self.sigma * keras.backend.softplus(
             args[0] / (self.k * self.sigma))
@@ -491,6 +491,8 @@ def extract_label(label):
         - name: The type of the layer.
         - shape: The shape of the layer
     """
+    if label in ['class_label', 'bounding_box']:
+        return -1, label, 0
 
     label = label.split('_')
     layer_num = None
@@ -540,6 +542,77 @@ def top_k_categorical_accuracy(y_true, y_pred, k=5):
     """
 
     return np.mean(in_top_k(y_pred, np.argmax(y_true, axis=-1), k))
+
+
+def _calculate_iou(y_true, y_pred):
+    """Input:
+    Keras provides input as numpy arrays with shape (batch_size, num_columns).
+
+    Arguments:
+    y_true -- first box, numpy array with format [x, y, width, height]
+    y_pred -- second box, numpy array with format [x, y, width, height]
+    x any y are the coordinates of the top left corner of each box.
+
+    Output: IoU of type float32. (This is a ratio. Max is 1. Min is 0.)
+    """
+    results = []
+    high = y_true.shape[0] if y_true.shape[0] is not None else 1
+
+    for i in range(0, high):
+        x_boxTrue_tleft = y_true[0, 0]  # numpy index selection
+        y_boxTrue_tleft = y_true[0, 1]
+        boxTrue_width = y_true[0, 2]
+        boxTrue_height = y_true[0, 3]
+        area_boxTrue = (boxTrue_width * boxTrue_height)
+
+        x_boxPred_tleft = y_pred[0, 0]
+        y_boxPred_tleft = y_pred[0, 1]
+        boxPred_width = y_pred[0, 2]
+        boxPred_height = y_pred[0, 3]
+        area_boxPred = (boxPred_width * boxPred_height)
+
+        # calculate the bottom right coordinates for boxTrue and boxPred
+        x_boxTrue_br = x_boxTrue_tleft + boxTrue_width
+        y_boxTrue_br = y_boxTrue_tleft + boxTrue_height
+        x_boxPred_br = x_boxPred_tleft + boxPred_width
+        y_boxPred_br = y_boxPred_tleft + boxPred_height
+
+        # calculate top left and bottom right coordinates for intersection box
+
+        # boxInt - top left coords
+        x_boxInt_tleft = np.max([x_boxTrue_tleft, x_boxPred_tleft])
+        y_boxInt_tleft = np.max([y_boxTrue_tleft, y_boxPred_tleft])
+
+        # boxInt - bottom right coords
+        x_boxInt_br = np.min([x_boxTrue_br, x_boxPred_br])
+        y_boxInt_br = np.min([y_boxTrue_br, y_boxPred_br])
+
+        # Calculate the area of boxInt, i.e. the area of the intersection
+        # between boxTrue and boxPred.
+        # np.max() forces the intersection area to 0 if boxes don't overlap
+        area_of_intersection = \
+            np.max([0, (x_boxInt_br - x_boxInt_tleft)]) * \
+            np.max([0, (y_boxInt_br - y_boxInt_tleft)])
+
+        divisor = (area_boxTrue + area_boxPred) - area_of_intersection
+        iou = area_of_intersection / divisor
+
+        # append the result to a list at the end of each loop
+        results.append(iou)
+
+    # return the mean IoU score for the batch
+    return np.mean(results)
+
+
+def IoU(y_true, y_pred):
+
+    # Note: the type float32 is very important. It must be the same type as the
+    # output from the python function above or you too may spend many late
+    # night hours trying to debug and almost give up.
+
+    iou = tf.py_function(_calculate_iou, [y_true, y_pred], tf.float32)
+
+    return iou
 
 
 def echo(text):
@@ -623,14 +696,14 @@ def get_pearson_coefficients(spikerates_batch, activations_batch, max_rate):
     Parameters
     ----------
 
-    spikerates_batch : 
+    spikerates_batch :
     activations_batch :
     max_rate: float
         Highest spike rate.
 
     Returns
     -------
-    
+
     co: list
 
     """

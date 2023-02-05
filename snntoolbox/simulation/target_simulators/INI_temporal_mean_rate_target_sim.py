@@ -10,6 +10,7 @@ import sys
 from tensorflow import keras
 import numpy as np
 
+from snntoolbox.utils.utils import IoU
 from snntoolbox.parsing.utils import get_inbound_layers_with_params
 from snntoolbox.simulation.utils import AbstractSNN, remove_name_counter
 
@@ -97,12 +98,24 @@ class SNN(AbstractSNN):
     def build_pooling(self, layer):
         pass
 
-    def compile(self):
+    def compile(self):  # changed
+        outputs = []
+        for name in self._spiking_layers.keys():
+            if 'class_label' in name or 'bounding_box' in name:
+                outputs.append(self._spiking_layers[name])
 
-        self.snn = keras.models.Model(
-            self._input_images,
-            self._spiking_layers[self.parsed_model.layers[-1].name])
-        self.snn.compile('sgd', 'categorical_crossentropy', ['accuracy'])
+        if len(outputs) == 1:
+            outputs = outputs[0]
+            loss = {'class_label': 'categorical_crossentropy'}
+            metric = {'class_label': 'accuracy'}
+        else:
+            loss = {'class_label': 'categorical_crossentropy',
+                    'bounding_box': 'mean_squared_error'}
+            metric = {'class_label': 'accuracy', 'bounding_box': IoU}
+
+        self.snn = keras.models.Model(self._input_images, outputs)
+        # self._spiking_layers[self.parsed_model.layers[-1].name])
+        self.snn.compile('sgd', loss=loss, metrics=metric)
 
         # Tensorflow 2 lists all variables as weights, including our state
         # variables (membrane potential etc). So a simple
@@ -112,12 +125,14 @@ class SNN(AbstractSNN):
         parameter_map = {remove_name_counter(p.name): v for p, v in
                          zip(self.parsed_model.weights,
                              self.parsed_model.get_weights())}
+
         count = 0
         for p in self.snn.weights:
             name = remove_name_counter(p.name)
             if name in parameter_map:
                 keras.backend.set_value(p, parameter_map[name])
                 count += 1
+
         assert count == len(parameter_map), "Not all weights have been " \
                                             "transferred from ANN to SNN."
 
@@ -143,6 +158,8 @@ class SNN(AbstractSNN):
 
         output_b_l_t = np.zeros((self.batch_size, self.num_classes,
                                  self._num_timesteps))
+        if self._detector:
+            output_b_bb_t = np.zeros((self.batch_size, 4, self._num_timesteps))
 
         print("Current accuracy of batch:")
 
@@ -166,6 +183,9 @@ class SNN(AbstractSNN):
             # Main step: Propagate input through network and record output
             # spikes.
             out_spikes = self.snn.predict_on_batch(input_b_l)
+            
+            if self._detector:
+                out_box_spikes, out_spikes = out_spikes
 
             # Add current spikes to previous spikes.
             if remove_classifier:  # Need to flatten output.
@@ -173,6 +193,10 @@ class SNN(AbstractSNN):
                     out_spikes > 0, (out_spikes.shape[0], -1)), 1)
             else:
                 output_b_l_t[:, :, sim_step_int] = out_spikes > 0
+            
+            if self._detector:
+                output_b_bb_t[:, :, sim_step_int] = out_box_spikes > 0
+                print(any(output_b_bb_t))
 
             # Record neuron variables.
             i = j = 0
@@ -236,7 +260,10 @@ class SNN(AbstractSNN):
                   "finished, but {} input events were not processed. Consider "
                   "increasing the simulation time.".format(remaining_events))
 
-        return np.cumsum(output_b_l_t, 2)
+        if self._detector:
+            return np.cumsum(output_b_l_t, 2), np.cumsum(output_b_bb_t, 2)
+        else:
+            return np.cumsum(output_b_l_t, 2)
 
     def reset(self, sample_idx):
 

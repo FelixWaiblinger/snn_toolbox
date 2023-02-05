@@ -40,6 +40,8 @@ from abc import abstractmethod
 from tensorflow import keras
 import numpy as np
 
+from snntoolbox.utils.utils import IoU
+
 IS_CHANNELS_FIRST = keras.backend.image_data_format() == 'channels_first'
 
 
@@ -797,6 +799,8 @@ class AbstractModelParser:
             name=self.input_layer_name)
         parsed_layers = {self.input_layer_name: img_input}
         print("Building parsed model...\n")
+        outputs = []
+        last_layer_name = None
         for layer in self._layer_list:
             # Replace 'parameters' key with Keras key 'weights'
             if 'parameters' in layer:
@@ -804,6 +808,7 @@ class AbstractModelParser:
 
             # Add layer
             layer_type = layer.pop('layer_type')
+            act = layer.pop('activation') if layer_type == 'Dense' else ''
             if hasattr(keras.layers, layer_type):
                 parsed_layer = getattr(keras.layers, layer_type)
             else:
@@ -814,16 +819,32 @@ class AbstractModelParser:
             if len(inbound) == 1:
                 inbound = inbound[0]
             check_for_custom_activations(layer)
+            if act == 'softmax':
+                layer['name'] = 'class_label'
+            elif act == 'sigmoid':
+                layer['name'] = 'bounding_box'
             parsed_layers[layer['name']] = parsed_layer(**layer)(inbound)
+            if act in ['softmax', 'sigmoid']:
+                outputs.append(parsed_layers[layer['name']])
+
+            last_layer_name = layer['name']
 
         print("Compiling parsed model...\n")
-        self.parsed_model = keras.models.Model(img_input, parsed_layers[
-            self._layer_list[-1]['name']])
+        if outputs == []:
+            outputs.append(parsed_layers[last_layer_name])
+        if len(outputs) > 1:
+            loss = {'class_label': 'categorical_crossentropy',
+                      'bounding_box': 'mean_squared_error'}
+            metric = {'class_label': 'accuracy', 'bounding_box': IoU}
+        else:
+            top_k = keras.metrics.TopKCategoricalAccuracy(
+                self.config.getint('simulation', 'top_k'))
+            loss = {'class_label': 'categorical_crossentropy'}
+            metric = ['accuracy', top_k]
+
+        self.parsed_model = keras.models.Model(img_input, outputs)
         # Optimizer and loss do not matter because we only do inference.
-        top_k = keras.metrics.TopKCategoricalAccuracy(
-            self.config.getint('simulation', 'top_k'))
-        self.parsed_model.compile('sgd', 'categorical_crossentropy',
-                                  ['accuracy', top_k])
+        self.parsed_model.compile('sgd', loss=loss, metrics=metric)
         # Todo: Enable adding custom metric via self.input_model.metrics.
         self.parsed_model.summary()
         return self.parsed_model
@@ -865,6 +886,53 @@ class AbstractModelParser:
         print("Top-5 accuracy: {:.2%}\n".format(score[2]))
 
         return score
+
+    def evaluate_det(self, batch_size, num_to_test, x_test=None, bb_test=None,
+                     y_test=None, dataflow=None):
+        """Evaluate parsed Keras model.
+
+        Can use either numpy arrays ``x_test, y_test`` containing the test
+        samples, or generate them with a dataflow
+        (``keras.ImageDataGenerator.flow_from_directory`` object).
+
+        Parameters
+        ----------
+
+        batch_size: int
+            Batch size
+
+        num_to_test: int
+            Number of samples to test
+
+        x_test: Optional[np.ndarray]
+
+        y_test: Optional[np.ndarray]
+
+        dataflow: keras.ImageDataGenerator.flow_from_directory
+        """
+
+        assert (x_test is not None and y_test is not None or dataflow is not
+                None), "No testsamples provided."
+
+        if x_test is not None:
+            test_targets = {'class_label': y_test, 'bounding_box': bb_test}
+            score = self.parsed_model.evaluate(x_test,
+                                               test_targets,
+                                               batch_size,
+                                               verbose=0,
+                                               return_dict=True)
+        else:
+            steps = int(num_to_test / batch_size)
+            score = self.parsed_model.evaluate(dataflow, steps=steps,
+                                               return_dict=True)
+
+        top1 = score['class_label_accuracy']
+        bb = score['bounding_box_IoU']
+
+        print("Top-1 accuracy: {:.2%}".format(top1))
+        print("Bounding box accuracy: {:.2%}\n".format(bb))
+
+        return top1
 
     @property
     def input_layer_name(self):

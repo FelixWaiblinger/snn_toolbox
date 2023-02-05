@@ -12,7 +12,7 @@ from tensorflow.keras import models, metrics
 from snntoolbox.parsing.utils import AbstractModelParser, has_weights, \
     fix_input_layer_shape, get_type, get_inbound_layers, get_outbound_layers, \
     get_custom_activations_dict, assemble_custom_dict, get_custom_layers_dict
-
+from snntoolbox.utils.utils import IoU
 
 class ModelParser(AbstractModelParser):
 
@@ -187,6 +187,69 @@ def load(path, filename, **kwargs):
     return {'model': model, 'val_fn': model.evaluate}
 
 
+def load_det(path, filename, **kwargs):
+    """Load network from file.
+
+    Parameters
+    ----------
+
+    path: str
+        Path to directory where to load model from.
+
+    filename: str
+        Name of file to load model from.
+
+    Returns
+    -------
+
+    : dict[str, Union[keras.models.Sequential, function]]
+        A dictionary of objects that constitute the input model. It must
+        contain the following two keys:
+
+        - 'model': keras.models.Sequential
+            Keras model instance of the network.
+        - 'val_fn': function
+            Function that allows evaluating the original model.
+    """
+
+    filepath = str(os.path.join(path, filename))
+    loss = {'class_label': 'categorical_crossentropy',
+              'bounding_box': 'mean_squared_error'}
+    metric = {'class_label': 'accuracy', 'bounding_box': IoU}
+
+    if os.path.exists(filepath + '.json'):
+        model = models.model_from_json(open(filepath + '.json').read())
+        try:
+            model.load_weights(filepath + '.h5')
+        except OSError:
+            # Allows h5 files without a .h5 extension to be loaded.
+            model.load_weights(filepath)
+        # With this loading method, optimizer and loss cannot be recovered.
+        # Could be specified by user, but since they are not really needed
+        # at inference time, set them to the most common choice.
+        # TODO: Proper reinstantiation should be doable since Keras2
+        model.compile('sgd', 'categorical_crossentropy',
+                      ['accuracy', IoU])
+    else:
+        filepath_custom_objects = kwargs.get('filepath_custom_objects', None)
+        if filepath_custom_objects is not None:
+            filepath_custom_objects = str(filepath_custom_objects)  # python 2
+
+        custom_dicts = assemble_custom_dict(
+            get_custom_activations_dict(filepath_custom_objects),
+            get_custom_layers_dict())
+        try:
+            model = models.load_model(filepath + '.h5', custom_dicts, compile=False)
+        except OSError as e:
+            print(e)
+            print("Trying to load without '.h5' extension.")
+            model = models.load_model(filepath, custom_dicts)
+        model.compile('sgd', loss, metric)
+
+    model.summary()
+    return {'model': model, 'val_fn': model.evaluate}
+
+
 def evaluate(val_fn, batch_size, num_to_test, x_test=None, y_test=None,
              dataflow=None):
     """Evaluate the original ANN.
@@ -226,3 +289,48 @@ def evaluate(val_fn, batch_size, num_to_test, x_test=None, y_test=None,
     print("Top-5 accuracy: {:.2%}\n".format(score[2]))
 
     return score[1]
+
+def evaluate_det(val_fn, batch_size, num_to_test, x_test=None, bb_test=None, y_test=None,
+                 dataflow=None):
+    """Evaluate the original ANN.
+
+    Can use either numpy arrays ``x_test, y_test`` containing the test samples,
+    or generate them with a dataflow
+    (``Keras.ImageDataGenerator.flow_from_directory`` object).
+
+    Parameters
+    ----------
+
+    val_fn:
+        Function to evaluate model.
+
+    batch_size: int
+        Batch size
+
+    num_to_test: int
+        Number of samples to test
+
+    x_test: Optional[np.ndarray]
+
+    y_test: Optional[np.ndarray]
+
+    dataflow: keras.ImageDataGenerator.flow_from_directory
+    """
+    if x_test is not None:
+        test_targets = {'class_label': y_test, 'bounding_box': bb_test}
+        score = val_fn(x_test, test_targets, batch_size,
+                       verbose=0, return_dict=True)
+    elif dataflow is not None:
+        steps = len(dataflow)
+        score = val_fn(dataflow, batch_size=batch_size, steps=steps,
+                       verbose=0, return_dict=True)
+    else:
+        raise NotImplementedError
+
+    top1 = score['class_label_accuracy']
+    bb = score['bounding_box_IoU']
+
+    print("Top-1 accuracy: {:.2%}".format(top1))
+    print("Bounding box IoU: {:.2%}\n".format(bb))
+
+    return top1

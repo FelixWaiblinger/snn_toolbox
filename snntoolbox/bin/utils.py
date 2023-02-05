@@ -59,6 +59,7 @@ def run_pipeline(config, queue=None):
     # ___________________________ LOAD DATASET ______________________________ #
 
     normset, testset = get_dataset(config)
+    is_obj_det = len(testset.keys()) == 3  # images, bboxes, labels
 
     results = None
     parsed_model = None
@@ -69,16 +70,33 @@ def run_pipeline(config, queue=None):
         model_lib = import_module('snntoolbox.parsing.model_libs.' +
                                   config.get('input', 'model_lib') +
                                   '_input_lib')
-        input_model = model_lib.load(config.get('paths', 'path_wd'),
-                                     config.get('paths', 'filename_ann'))
+        if is_obj_det:
+            input_model = model_lib.load_det(
+                config.get('paths', 'path_wd'),
+                config.get('paths', 'filename_ann'))
+        else:
+            input_model = model_lib.load(
+                config.get('paths', 'path_wd'),
+                config.get('paths', 'filename_ann'))
 
         # Evaluate input model.
         if config.getboolean('tools', 'evaluate_ann') and not is_stop(queue):
             print("Evaluating input model on {} samples...".format(
                 num_to_test))
-            acc = model_lib.evaluate(input_model['val_fn'],
-                                     config.getint('simulation', 'batch_size'),
-                                     num_to_test, **testset)
+
+            if is_obj_det:
+                acc = model_lib.evaluate_det(
+                    input_model['val_fn'],
+                    config.getint('simulation', 'batch_size'),
+                    num_to_test,
+                    **testset)
+            else:
+                acc = model_lib.evaluate(
+                    input_model['val_fn'],
+                    config.getint('simulation', 'batch_size'),
+                    num_to_test,
+                    **testset)
+
             results = [acc]
 
         # ____________________________ PARSE ________________________________ #
@@ -97,10 +115,17 @@ def run_pipeline(config, queue=None):
         if config.getboolean('tools', 'evaluate_ann') and not is_stop(queue):
             print("Evaluating parsed model on {} samples...".format(
                 num_to_test))
-            score = model_parser.evaluate(
-                config.getint('simulation', 'batch_size'),
-                num_to_test, **testset)
-            results = [score[1]]
+
+            if is_obj_det:
+                score = model_parser.evaluate_det(
+                    config.getint('simulation', 'batch_size'),
+                    num_to_test, **testset)
+            else:
+                score = model_parser.evaluate(
+                    config.getint('simulation', 'batch_size'),
+                    num_to_test, **testset)
+
+            results = [score]
 
         # Write parsed model to disk
         parsed_model.save(str(
