@@ -165,6 +165,7 @@ class SNN(AbstractSNN):
 
         # Loop through simulation time.
         self._input_spikecount = 0
+        time2output = num_timesteps
         for sim_step_int in range(num_timesteps):
             sim_step = (sim_step_int + 1) * self._dt
             self.set_time(sim_step)
@@ -183,7 +184,7 @@ class SNN(AbstractSNN):
             # Main step: Propagate input through network and record output
             # spikes.
             out_spikes = self.snn.predict_on_batch(input_b_l)
-            
+
             if self._detector:
                 out_box_spikes, out_spikes = out_spikes
 
@@ -193,10 +194,9 @@ class SNN(AbstractSNN):
                     out_spikes > 0, (out_spikes.shape[0], -1)), 1)
             else:
                 output_b_l_t[:, :, sim_step_int] = out_spikes > 0
-            
+
             if self._detector:
                 output_b_bb_t[:, :, sim_step_int] = out_box_spikes > 0
-                print(any(output_b_bb_t))
 
             # Record neuron variables.
             i = j = 0
@@ -234,6 +234,7 @@ class SNN(AbstractSNN):
                         self.neuron_operations_b_t[:, 0] += self.fanin[1] * \
                             self.num_neurons[1] * np.ones(self.batch_size) * 2
 
+            # classification
             spike_sums_b_l = np.sum(output_b_l_t, 2)
             undecided_b = np.sum(spike_sums_b_l, 1) == 0
             guesses_b = np.argmax(spike_sums_b_l, 1)
@@ -246,6 +247,14 @@ class SNN(AbstractSNN):
             else:
                 sys.stdout.write('\r{:>7.2%}'.format(current_acc))
                 sys.stdout.flush()
+
+            # bounding box
+            if self._detector:
+                bb_spike_sums_b = np.sum(output_b_bb_t, 2)
+                if time2output == num_timesteps and \
+                   np.max(bb_spike_sums_b) > 0:
+                    time2output = num_timesteps - int(sim_step / self._dt - 1)
+                bb_spike_rate_b = bb_spike_sums_b / time2output
 
         if self._is_aedat_input:
             remaining_events = \
@@ -261,7 +270,7 @@ class SNN(AbstractSNN):
                   "increasing the simulation time.".format(remaining_events))
 
         if self._detector:
-            return np.cumsum(output_b_l_t, 2), np.cumsum(output_b_bb_t, 2)
+            return np.cumsum(output_b_l_t, 2), bb_spike_rate_b
         else:
             return np.cumsum(output_b_l_t, 2)
 

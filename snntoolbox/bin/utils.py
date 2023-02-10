@@ -86,7 +86,7 @@ def run_pipeline(config, queue=None):
 
             if is_obj_det:
                 acc = model_lib.evaluate_det(
-                    input_model['val_fn'],
+                    input_model['model'],
                     config.getint('simulation', 'batch_size'),
                     num_to_test,
                     **testset)

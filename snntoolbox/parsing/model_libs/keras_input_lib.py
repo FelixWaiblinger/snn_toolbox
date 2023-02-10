@@ -14,6 +14,7 @@ from snntoolbox.parsing.utils import AbstractModelParser, has_weights, \
     get_custom_activations_dict, assemble_custom_dict, get_custom_layers_dict
 from snntoolbox.utils.utils import IoU
 
+
 class ModelParser(AbstractModelParser):
 
     def get_layer_iterable(self):
@@ -214,7 +215,7 @@ def load_det(path, filename, **kwargs):
 
     filepath = str(os.path.join(path, filename))
     loss = {'class_label': 'categorical_crossentropy',
-              'bounding_box': 'mean_squared_error'}
+            'bounding_box': 'mean_squared_error'}
     metric = {'class_label': 'accuracy', 'bounding_box': IoU}
 
     if os.path.exists(filepath + '.json'):
@@ -239,7 +240,9 @@ def load_det(path, filename, **kwargs):
             get_custom_activations_dict(filepath_custom_objects),
             get_custom_layers_dict())
         try:
-            model = models.load_model(filepath + '.h5', custom_dicts, compile=False)
+            model = models.load_model(filepath + '.h5',
+                                      custom_dicts,
+                                      compile=False)
         except OSError as e:
             print(e)
             print("Trying to load without '.h5' extension.")
@@ -290,8 +293,9 @@ def evaluate(val_fn, batch_size, num_to_test, x_test=None, y_test=None,
 
     return score[1]
 
-def evaluate_det(val_fn, batch_size, num_to_test, x_test=None, bb_test=None, y_test=None,
-                 dataflow=None):
+
+def evaluate_det(val_fn, batch_size, num_to_test, x_test=None, bb_test=None,
+                 y_test=None, dataflow=None):
     """Evaluate the original ANN.
 
     Can use either numpy arrays ``x_test, y_test`` containing the test samples,
@@ -318,8 +322,8 @@ def evaluate_det(val_fn, batch_size, num_to_test, x_test=None, bb_test=None, y_t
     """
     if x_test is not None:
         test_targets = {'class_label': y_test, 'bounding_box': bb_test}
-        score = val_fn(x_test, test_targets, batch_size,
-                       verbose=0, return_dict=True)
+        score = val_fn.evaluate(x_test, test_targets, batch_size,
+                                verbose=0, return_dict=True)
     elif dataflow is not None:
         steps = len(dataflow)
         score = val_fn(dataflow, batch_size=batch_size, steps=steps,

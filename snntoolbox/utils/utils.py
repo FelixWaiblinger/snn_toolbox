@@ -559,45 +559,42 @@ def _calculate_iou(y_true, y_pred):
     high = y_true.shape[0] if y_true.shape[0] is not None else 1
 
     for i in range(0, high):
-        x_boxTrue_tleft = y_true[0, 0]  # numpy index selection
-        y_boxTrue_tleft = y_true[0, 1]
-        boxTrue_width = y_true[0, 2]
-        boxTrue_height = y_true[0, 3]
-        area_boxTrue = (boxTrue_width * boxTrue_height)
+        # true bbox
+        bb_t_x1 = y_true[i, 0]  # top left x
+        bb_t_y1 = y_true[i, 1]  # top left y
+        bb_t_x2 = y_true[i, 2]  # bottom right x
+        bb_t_y2 = y_true[i, 3]  # bottom right y
 
-        x_boxPred_tleft = y_pred[0, 0]
-        y_boxPred_tleft = y_pred[0, 1]
-        boxPred_width = y_pred[0, 2]
-        boxPred_height = y_pred[0, 3]
-        area_boxPred = (boxPred_width * boxPred_height)
+        bb_t_w = bb_t_x2 - bb_t_x1  # width
+        bb_t_h = bb_t_y2 - bb_t_y1  # height
 
-        # calculate the bottom right coordinates for boxTrue and boxPred
-        x_boxTrue_br = x_boxTrue_tleft + boxTrue_width
-        y_boxTrue_br = y_boxTrue_tleft + boxTrue_height
-        x_boxPred_br = x_boxPred_tleft + boxPred_width
-        y_boxPred_br = y_boxPred_tleft + boxPred_height
+        bb_t_a = bb_t_w * bb_t_h  # area
 
-        # calculate top left and bottom right coordinates for intersection box
+        # predicted bbox
+        bb_p_x1 = y_pred[i, 0]  # top left x
+        bb_p_y1 = y_pred[i, 1]  # top left y
+        bb_p_x2 = y_pred[i, 2]  # bottom right x
+        bb_p_y2 = y_pred[i, 3]  # bottom right y
 
-        # boxInt - top left coords
-        x_boxInt_tleft = np.max([x_boxTrue_tleft, x_boxPred_tleft])
-        y_boxInt_tleft = np.max([y_boxTrue_tleft, y_boxPred_tleft])
+        bb_p_w = bb_p_x2 - bb_p_x1  # width
+        bb_p_h = bb_p_y2 - bb_p_y1  # height
 
-        # boxInt - bottom right coords
-        x_boxInt_br = np.min([x_boxTrue_br, x_boxPred_br])
-        y_boxInt_br = np.min([y_boxTrue_br, y_boxPred_br])
+        bb_p_a = bb_p_w * bb_p_h  # area
 
-        # Calculate the area of boxInt, i.e. the area of the intersection
-        # between boxTrue and boxPred.
-        # np.max() forces the intersection area to 0 if boxes don't overlap
-        area_of_intersection = \
-            np.max([0, (x_boxInt_br - x_boxInt_tleft)]) * \
-            np.max([0, (y_boxInt_br - y_boxInt_tleft)])
+        # intersection
+        bb_i_x1 = np.max([bb_t_x1, bb_p_x1])  # top left x
+        bb_i_y1 = np.max([bb_t_y1, bb_p_y1])  # top left y
+        bb_i_x2 = np.min([bb_t_x2, bb_p_x2])  # bottom right x
+        bb_i_y2 = np.min([bb_t_y2, bb_p_y2])  # bottom right y
 
-        divisor = (area_boxTrue + area_boxPred) - area_of_intersection
-        iou = area_of_intersection / divisor
+        bb_i_w = bb_i_x2 - bb_i_x1  # width
+        bb_i_h = bb_i_y2 - bb_i_y1  # height
 
-        # append the result to a list at the end of each loop
+        bb_i_a = np.max([0, bb_i_w]) * np.max([0, bb_i_h])  # area
+
+        # intersection over union
+        iou = bb_i_a / (bb_t_a + bb_p_a - bb_i_a)
+
         results.append(iou)
 
     # return the mean IoU score for the batch
@@ -605,14 +602,7 @@ def _calculate_iou(y_true, y_pred):
 
 
 def IoU(y_true, y_pred):
-
-    # Note: the type float32 is very important. It must be the same type as the
-    # output from the python function above or you too may spend many late
-    # night hours trying to debug and almost give up.
-
-    iou = tf.py_function(_calculate_iou, [y_true, y_pred], tf.float32)
-
-    return iou
+    return tf.py_function(_calculate_iou, [y_true, y_pred], tf.float32)
 
 
 def echo(text):

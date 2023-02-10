@@ -149,11 +149,19 @@ def normalize_parameters(model, config, **kwargs):
             scale_fac = 1.0
             print("Using scale factor {:.2f} for softmax layer.".format(
                 scale_fac))
+        if layer.activation.__name__ == 'sigmoid':
+            # When using a certain percentile or even the max, the scaling
+            # factor can be extremely low in case of many output classes
+            # (e.g. 0.01 for ImageNet). This amplifies weights and biases
+            # greatly. But large biases cause large offsets in the beginning
+            # of the simulation (spike input absent).
+            scale_fac = 1.0
+            print("Using scale factor {:.2f} for sigmoid layer.".format(
+                scale_fac))
         else:
             scale_fac = scale_facs[layer.name]
         inbound = get_inbound_layers_with_params(layer)
         if len(inbound) == 0:  # Input layer
-            print(scale_facs)
             parameters_norm = [
                 parameters[0] * scale_facs[model.layers[0].name] / scale_fac,
                 parameters[1] / scale_fac]
@@ -352,7 +360,7 @@ def get_activations_layer(layer_in, layer_out, x, batch_size=None):
 
     if batch_size is None:
         batch_size = 10
-    
+
     # batch size larger than num_to_test leads to problems
     _batch_size = len(x) if batch_size > len(x) else batch_size
 
@@ -405,10 +413,13 @@ def get_activations_batch(ann, x_batch):
 
 def try_reload_activations(layer, model, x_norm, batch_size, activ_dir):
     try:
-        activations = np.load(os.path.join(activ_dir,
-                                           layer.name + '.npz'))['arr_0']
+        with np.load(os.path.join(activ_dir, layer.name + '.npz')) as act:
+            activations = act['arr_0']
+            print("Loading activations stored during a previous run.")
+            return np.array(activations)
     except IOError:
         if x_norm is None:
+            print("No activations stored and no normset found.")
             return
 
         print("Calculating activations of layer {} ...".format(layer.name))
@@ -416,6 +427,5 @@ def try_reload_activations(layer, model, x_norm, batch_size, activ_dir):
                                             batch_size)
         print("Writing activations to disk...")
         np.savez_compressed(os.path.join(activ_dir, layer.name), activations)
-    else:
-        print("Loading activations stored during a previous run.")
-    return np.array(activations)
+
+        return np.array(activations)

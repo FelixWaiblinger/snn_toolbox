@@ -713,6 +713,7 @@ class AbstractModelParser:
         if activation_str == 'softmax' and \
                 self.config.getboolean('conversion', 'softmax_to_relu'):
             activation = 'relu'
+            attributes['name'] = 'class_label'
             print("Replaced softmax by relu activation function.")
         elif activation_str == 'linear' and self.get_type(layer) == 'Dense' \
                 and self.config.getboolean('conversion', 'append_softmax',
@@ -808,7 +809,7 @@ class AbstractModelParser:
 
             # Add layer
             layer_type = layer.pop('layer_type')
-            act = layer.pop('activation') if layer_type == 'Dense' else ''
+            activation = layer['activation'] if layer_type == 'Dense' else ''
             if hasattr(keras.layers, layer_type):
                 parsed_layer = getattr(keras.layers, layer_type)
             else:
@@ -819,22 +820,26 @@ class AbstractModelParser:
             if len(inbound) == 1:
                 inbound = inbound[0]
             check_for_custom_activations(layer)
-            if act == 'softmax':
+            is_output = False
+            if layer['name'] == 'class_label':
+                is_output = True
+            elif activation == 'softmax':
                 layer['name'] = 'class_label'
-            elif act == 'sigmoid':
+                is_output = True
+            elif activation == 'sigmoid':
                 layer['name'] = 'bounding_box'
+                is_output = True
             parsed_layers[layer['name']] = parsed_layer(**layer)(inbound)
-            if act in ['softmax', 'sigmoid']:
+            if is_output:
                 outputs.append(parsed_layers[layer['name']])
-
             last_layer_name = layer['name']
 
         print("Compiling parsed model...\n")
-        if outputs == []:
+        if len(outputs) == 0:
             outputs.append(parsed_layers[last_layer_name])
-        if len(outputs) > 1:
+        elif len(outputs) == 2:
             loss = {'class_label': 'categorical_crossentropy',
-                      'bounding_box': 'mean_squared_error'}
+                    'bounding_box': 'mean_squared_error'}
             metric = {'class_label': 'accuracy', 'bounding_box': IoU}
         else:
             top_k = keras.metrics.TopKCategoricalAccuracy(
@@ -847,6 +852,7 @@ class AbstractModelParser:
         self.parsed_model.compile('sgd', loss=loss, metrics=metric)
         # Todo: Enable adding custom metric via self.input_model.metrics.
         self.parsed_model.summary()
+
         return self.parsed_model
 
     def evaluate(self, batch_size, num_to_test, x_test=None, y_test=None,
@@ -910,7 +916,6 @@ class AbstractModelParser:
 
         dataflow: keras.ImageDataGenerator.flow_from_directory
         """
-
         assert (x_test is not None and y_test is not None or dataflow is not
                 None), "No testsamples provided."
 

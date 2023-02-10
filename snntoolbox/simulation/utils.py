@@ -21,7 +21,7 @@ from snntoolbox.bin.utils import get_log_keys, get_plot_keys, \
 from snntoolbox.conversion.utils import get_activations_batch
 from snntoolbox.parsing.utils import get_type, fix_input_layer_shape, \
     get_fanout, get_fanin, get_outbound_layers
-from snntoolbox.utils.utils import echo, in_top_k
+from snntoolbox.utils.utils import echo, in_top_k, IoU
 
 
 class AbstractSNN:
@@ -153,7 +153,7 @@ class AbstractSNN:
         self.top1err_b_t = self.top5err_b_t = None
         self.synaptic_operations_b_t = self.operations_ann = None
         self.neuron_operations_b_t = None
-        self.top1err_ann = self.top5err_ann = None
+        self.top1err_ann = self.top5err_ann = self.bbiou_ann = None
         self.num_neurons = self.num_neurons_with_bias = self.num_synapses = \
             None
         self.fanin = self.fanout = None
@@ -542,8 +542,7 @@ class AbstractSNN:
         top5score_moving = 0
         score1_ann = 0
         score5_ann = 0
-        truth_bbs = []
-        guess_bbs = []
+        score_iou_ann = 0
         truth_d = []  # Filled up with correct classes of all test samples.
         guesses_d = []  # Filled up with guessed classes of all test samples.
 
@@ -631,7 +630,11 @@ class AbstractSNN:
             # of the simulation.
             print("\nStarting new simulation...\n")
             if self._detector:
-                output_b_l_t, output_bb = self.simulate(**data_batch_kwargs)
+                output_b_l_t, output_bb_rate_b = \
+                    self.simulate(**data_batch_kwargs)
+
+                # calculate IoU for predicted bounding boxes
+                mean_iou_b = IoU(b_b_l, output_bb_rate_b)
             else:
                 output_b_l_t = self.simulate(**data_batch_kwargs)
 
@@ -666,10 +669,13 @@ class AbstractSNN:
             top5score_moving += sum(in_top_k(output_b_l_t[:, :, -1], truth_b,
                                              self.top_k))
             top5acc_moving = top5score_moving / num_samples_seen
+
             print("\nBatch {} of {} completed ({:.1%})".format(
                 batch_idx + 1, num_batches, (batch_idx + 1) / num_batches))
             print("Moving accuracy of SNN (top-1, top-{}): {:.2%}, {:.2%}."
                   "".format(self.top_k, top1acc_moving, top5acc_moving))
+            if self._detector:
+                print("Moving mean IoU of SNN: {:.2%}".format(mean_iou_b))
 
             # Evaluate ANN on the same batch as SNN for a direct comparison.
             if bb_test is not None:
@@ -684,20 +690,22 @@ class AbstractSNN:
                 score = self.parsed_model.evaluate(
                     x_b_l, y_b_l, self.parsed_model.input_shape[0], verbose=0)
 
-            print(score)
-
             if type(score) is list:
                 score1_ann += score[1] * self.batch_size
                 score5_ann += score[2] * self.batch_size
             elif type(score) is dict:
                 score1_ann += score['class_label_accuracy'] * self.batch_size
-                score5_ann += score['class_label_top_k_categorical_accuracy'] * self.batch_size
+                score_iou_ann += score['bounding_box_IoU'] * self.batch_size
 
             self.top1err_ann = 1 - score1_ann / num_samples_seen
             self.top5err_ann = 1 - score5_ann / num_samples_seen
+            self.bbiou_ann = 1 - score_iou_ann / num_samples_seen
             print("Moving accuracy of ANN (top-1, top-{}): {:.2%}, {:.2%}."
-                  "\n".format(self.top_k, 1 - self.top1err_ann,
-                              1 - self.top5err_ann))
+                  "".format(self.top_k, 1 - self.top1err_ann,
+                            1 - self.top5err_ann))
+            if self._detector:
+                print("Moving mean IoU of ANN: {:.2%}"
+                      "\n".format(1 - self.bbiou_ann))
 
             with open(path_acc, str('a')) as f_acc:
                 f_acc.write(str("{} {:.2%} {:.2%} {:.2%} {:.2%}\n".format(
@@ -921,6 +929,7 @@ class AbstractSNN:
                                     np.bool)
         self.top5err_b_t = np.empty((self.batch_size, self._num_timesteps),
                                     np.bool)
+        self.bbiou_ann = 0
 
     def reset_log_vars(self):
         """Reset variables to record during simulation."""
